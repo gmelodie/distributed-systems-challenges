@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    io::{self, Read},
-};
+use std::{collections::HashSet, io};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -12,88 +9,132 @@ struct Node {
 }
 
 impl Node {
-    fn init(&mut self, id: String, node_ids: HashSet<String>) {
-        self.id = id;
-        self.node_ids = node_ids;
-    }
-    fn process(&mut self, msg: Message) -> Result<Message> {
-        if msg.body.is_none() {
-            if msg.ty.unwrap().as_str() == "init" {
-                self.init(
-                    msg.node_id.unwrap(),
-                    msg.node_ids.unwrap().into_iter().collect(), // vec to hashset
-                );
-
-                return Ok(Message {
-                    ty: Some("init_ok".to_string()),
-                    in_reply_to: msg.id,
-                    src: None,
-                    dst: None,
-                    id: None,
-                    body: None,
-                    node_id: None,
-                    node_ids: None,
-                });
-            }
+    fn from_init(msg: Message) -> Result<(Message, Self)> {
+        match msg.body.payload {
+            Payload::Init { node_id, node_ids } => Ok((
+                Message {
+                    src: msg.dst,
+                    dst: msg.src,
+                    body: Body {
+                        id: None,
+                        in_reply_to: msg.body.id,
+                        payload: Payload::InitOk {},
+                    },
+                },
+                Self {
+                    id: node_id,
+                    node_ids: node_ids.into_iter().collect(),
+                },
+            )),
+            _ => Err(anyhow!("Message is not init type")),
         }
-        let body = msg.body.unwrap();
-        match body.ty.as_str() {
-            "echo" => Ok(Message {
-                src: msg.dst,
+    }
+
+    fn process(&self, msg: Message) -> Result<Message> {
+        // if !self.node_ids.contains(&msg.src) || !self.node_ids.contains(&msg.dst) {
+        //     return Err(anyhow!("Src or Dst not in node_ids"));
+        // }
+        if msg.dst != self.id {
+            return Ok(Message {
+                src: self.id.clone(),
                 dst: msg.src,
-                body: Some(Body {
-                    ty: "echo_ok".to_string(),
-                    id: body.id,
-                    in_reply_to: Some(body.id),
-                    echo: body.echo,
-                }),
-                ty: None,
-                in_reply_to: None,
-                id: None,
-                node_id: None,
-                node_ids: None,
+                body: Body {
+                    id: None,
+                    in_reply_to: msg.body.id,
+                    payload: Payload::Error {
+                        code: 1001, // 1000 and above are for our own uses
+                        text: "Destination does not match this node_id".to_string(),
+                    },
+                },
+            });
+        }
+        match msg.body.payload {
+            Payload::Init {
+                node_id: _,
+                node_ids: _,
+            } => Ok(Message {
+                src: self.id.clone(),
+                dst: msg.src,
+                body: Body {
+                    id: None,
+                    in_reply_to: msg.body.id,
+                    payload: Payload::Error {
+                        code: 1002,
+                        text: "Node already initialized".to_string(),
+                    },
+                },
             }),
-            _ => panic!("Unrecognized msg type: {}", body.ty),
+            Payload::Echo { echo } => Ok(Message {
+                src: self.id.clone(),
+                dst: msg.src,
+                body: Body {
+                    id: msg.body.id,
+                    in_reply_to: msg.body.id,
+                    payload: Payload::EchoOk { echo },
+                },
+            }),
+            _ => panic!("Unrecognized msg type"),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
-    src: Option<String>,
+    src: String,
     #[serde(rename = "dest")]
-    dst: Option<String>,
-    #[serde(rename = "type")]
-    ty: Option<String>,
-    in_reply_to: Option<usize>,
-    body: Option<Body>,
-    #[serde(rename = "msg_id")]
-    id: Option<usize>,
-    node_id: Option<String>,
-    node_ids: Option<Vec<String>>,
+    dst: String,
+    body: Body,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Body {
-    #[serde(rename = "type")]
-    ty: String,
     #[serde(rename = "msg_id")]
-    id: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     in_reply_to: Option<usize>,
-    echo: Option<String>,
+    #[serde(flatten)]
+    payload: Payload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum Payload {
+    Echo {
+        echo: String,
+    },
+    EchoOk {
+        echo: String,
+    },
+    Init {
+        node_id: String,
+        node_ids: Vec<String>,
+    },
+    InitOk {},
+    Error {
+        code: usize,
+        text: String,
+    },
 }
 
 fn main() -> Result<()> {
     let mut node = Node {
-        id: String::new(),
+        id: "n0".to_string(),
         node_ids: HashSet::new(),
     };
-    loop {
-        let mut input = String::new();
-        io::stdin().read_to_string(&mut input)?;
-        let msg: Message = serde_json::from_str(&input)?;
-        println!("{:#?}", msg);
-        let resp = node.process(msg)?;
+
+    for (i, line) in io::stdin().lines().enumerate() {
+        let msg: Message = serde_json::from_str(&line?)?;
+
+        let resp = if i == 0 {
+            let (resp, new_node) = Node::from_init(msg)?;
+            node = new_node;
+            resp
+        } else {
+            node.process(msg)?
+        };
+
         println!("{}", serde_json::to_string(&resp)?);
     }
 
