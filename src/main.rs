@@ -1,4 +1,7 @@
-use std::{collections::HashSet, io};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -7,6 +10,7 @@ use uuid::Uuid;
 struct Node {
     id: String,
     node_ids: HashSet<String>,
+    messages: HashSet<usize>,
 }
 
 impl Node {
@@ -25,6 +29,7 @@ impl Node {
                 Self {
                     id: node_id,
                     node_ids: node_ids.into_iter().collect(),
+                    messages: HashSet::<usize>::new(),
                 },
             )),
             _ => Err(anyhow!("Message is not init type")),
@@ -90,6 +95,38 @@ impl Node {
                     },
                 })
             }
+            Payload::Broadcast { message } => {
+                self.messages.insert(message);
+                Ok(Message {
+                    src: self.id.clone(),
+                    dst: msg.src,
+                    body: Body {
+                        id: msg.body.id,
+                        in_reply_to: msg.body.id,
+                        payload: Payload::BroadcastOk {},
+                    },
+                })
+            }
+            Payload::Read {} => Ok(Message {
+                src: self.id.clone(),
+                dst: msg.src,
+                body: Body {
+                    id: msg.body.id,
+                    in_reply_to: msg.body.id,
+                    payload: Payload::ReadOk {
+                        messages: self.messages.clone().into_iter().collect(),
+                    },
+                },
+            }),
+            Payload::Topology { topology: _ } => Ok(Message {
+                src: self.id.clone(),
+                dst: msg.src,
+                body: Body {
+                    id: msg.body.id,
+                    in_reply_to: msg.body.id,
+                    payload: Payload::TopologyOk {},
+                },
+            }),
             _ => panic!("Unrecognized msg type"),
         }
     }
@@ -135,6 +172,21 @@ enum Payload {
         id: String,
     },
 
+    Broadcast {
+        message: usize,
+    },
+    BroadcastOk {},
+
+    Read {},
+    ReadOk {
+        messages: Vec<usize>,
+    },
+
+    Topology {
+        topology: HashMap<String, Vec<String>>,
+    },
+    TopologyOk {},
+
     Error {
         code: usize,
         text: String,
@@ -145,6 +197,7 @@ fn main() -> Result<()> {
     let mut node = Node {
         id: "n0".to_string(),
         node_ids: HashSet::new(),
+        messages: HashSet::new(),
     };
 
     for (i, line) in io::stdin().lines().enumerate() {
