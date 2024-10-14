@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use anyhow::{anyhow, Result};
@@ -11,6 +12,7 @@ struct Node {
     id: String,
     node_ids: HashSet<String>,
     messages: HashSet<usize>,
+    g_counter: AtomicUsize,
 }
 
 impl Node {
@@ -30,6 +32,7 @@ impl Node {
                     id: node_id,
                     node_ids: node_ids.into_iter().collect(),
                     messages: HashSet::<usize>::new(),
+                    g_counter: AtomicUsize::new(0),
                 },
             )),
             _ => Err(anyhow!("Message is not init type")),
@@ -107,17 +110,31 @@ impl Node {
                     },
                 })
             }
-            Payload::Read {} => Ok(Message {
-                src: self.id.clone(),
-                dst: msg.src,
-                body: Body {
-                    id: msg.body.id,
-                    in_reply_to: msg.body.id,
-                    payload: Payload::ReadOk {
-                        messages: self.messages.clone().into_iter().collect(),
+            // // This read is for topology
+            // Payload::Read {} => Ok(Message {
+            //     src: self.id.clone(),
+            //     dst: msg.src,
+            //     body: Body {
+            //         id: msg.body.id,
+            //         in_reply_to: msg.body.id,
+            //         payload: Payload::ReadOk {
+            //             messages: self.messages.clone().into_iter().collect(),
+            //         },
+            //     },
+            // }),
+            // This read is for global counter
+            Payload::Read {} => {
+                let value = self.g_counter.load(Ordering::SeqCst);
+                Ok(Message {
+                    src: self.id.clone(),
+                    dst: msg.src,
+                    body: Body {
+                        id: msg.body.id,
+                        in_reply_to: msg.body.id,
+                        payload: Payload::ReadOk { value },
                     },
-                },
-            }),
+                })
+            }
             Payload::Topology { topology: _ } => Ok(Message {
                 src: self.id.clone(),
                 dst: msg.src,
@@ -127,6 +144,18 @@ impl Node {
                     payload: Payload::TopologyOk {},
                 },
             }),
+            Payload::Add { delta } => {
+                let _value = self.g_counter.fetch_add(delta, Ordering::Relaxed);
+                Ok(Message {
+                    src: self.id.clone(),
+                    dst: msg.src,
+                    body: Body {
+                        id: msg.body.id,
+                        in_reply_to: msg.body.id,
+                        payload: Payload::AddOk {},
+                    },
+                })
+            }
             _ => panic!("Unrecognized msg type"),
         }
     }
@@ -177,15 +206,26 @@ enum Payload {
     },
     BroadcastOk {},
 
-    Read {},
-    ReadOk {
-        messages: Vec<usize>,
-    },
-
+    // Topology Read
+    // Read {},
+    // ReadOk {
+    //     messages: Vec<usize>,
+    // },
     Topology {
         topology: HashMap<String, Vec<String>>,
     },
     TopologyOk {},
+
+    // Add Read
+    Read {},
+    ReadOk {
+        value: usize,
+    },
+
+    Add {
+        delta: usize,
+    },
+    AddOk {},
 
     Error {
         code: usize,
@@ -198,6 +238,7 @@ fn main() -> Result<()> {
         id: "n0".to_string(),
         node_ids: HashSet::new(),
         messages: HashSet::new(),
+        g_counter: AtomicUsize::new(0),
     };
 
     for (i, line) in io::stdin().lines().enumerate() {
