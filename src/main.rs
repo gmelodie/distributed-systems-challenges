@@ -2,6 +2,7 @@ use std::{collections::HashSet, io};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 struct Node {
     id: String,
@@ -30,7 +31,11 @@ impl Node {
         }
     }
 
-    fn process(&self, msg: Message) -> Result<Message> {
+    fn generate_uuid(&mut self) -> String {
+        Uuid::new_v4().hyphenated().to_string()
+    }
+
+    fn process(&mut self, msg: Message) -> Result<Message> {
         // if !self.node_ids.contains(&msg.src) || !self.node_ids.contains(&msg.dst) {
         //     return Err(anyhow!("Src or Dst not in node_ids"));
         // }
@@ -73,6 +78,18 @@ impl Node {
                     payload: Payload::EchoOk { echo },
                 },
             }),
+            Payload::Generate {} => {
+                let uuid = self.generate_uuid();
+                Ok(Message {
+                    src: self.id.clone(),
+                    dst: msg.src,
+                    body: Body {
+                        id: msg.body.id,
+                        in_reply_to: msg.body.id,
+                        payload: Payload::GenerateOk { id: uuid },
+                    },
+                })
+            }
             _ => panic!("Unrecognized msg type"),
         }
     }
@@ -112,6 +129,12 @@ enum Payload {
         node_ids: Vec<String>,
     },
     InitOk {},
+
+    Generate {},
+    GenerateOk {
+        id: String,
+    },
+
     Error {
         code: usize,
         text: String,
